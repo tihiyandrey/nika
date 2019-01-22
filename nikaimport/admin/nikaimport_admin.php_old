@@ -1,0 +1,325 @@
+<?php
+require_once($_SERVER["DOCUMENT_ROOT"]."/bitrix/modules/main/include/prolog_admin_before.php");
+IncludeModuleLangFile(__FILE__);
+Bitrix\Main\Loader::includeModule('nikaimport');
+$arLang    = $APPLICATION->getLang();
+$MOD_RIGHT = $APPLICATION->getGroupRight('nikaimport');
+if ($MOD_RIGHT < 'R') {
+	$APPLICATION->authForm(getMessage('ACCESS_DENIED'));
+}
+$sTableID = "t_nikaimport_admin";
+$oSort    = new CAdminSorting($sTableID, 'id', 'asc');
+$lAdmin   = new CAdminList($sTableID, $oSort);
+$aContext = array();
+
+if ($MOD_RIGHT >= 'W') {
+	$aContext[] = array(
+		"ICON" => "btn_new",
+		"TEXT" => getMessage('NIKAIMPORT_BTN_NEW'),
+		"LINK" => "nikaimport_edit.php?lang=".LANGUAGE_ID,
+		"TITLE" => getMessage('NIKAIMPORT_BTN_NEW'),
+	);
+}
+
+$lAdmin->addAdminContextMenu($aContext);
+
+if ($MOD_RIGHT >= 'W' && $arID = $lAdmin->groupAction())
+{
+	if ($_REQUEST['action'] == 'start')
+	{
+		$arActiveTests = array();
+		$result = Bitrix\NikaImport\NikaImportTable::getList(array(
+			'filter' => array('ACTIVE' => 'Y'),
+			'select' => array('ID', 'SITE_ID')
+		));
+		while ($nikaimport = $result->fetch())
+		{
+			if (!isset($arActiveTests[$nikaimport['SITE_ID']]))
+				$arActiveTests[$nikaimport['SITE_ID']] = array();
+
+			$arActiveTests[$nikaimport['SITE_ID']][] = $nikaimport['ID'];
+		}
+	}
+
+	foreach ($arID as $ID)
+	{
+		$ID = intval($ID);
+
+		if ($ID <= 0)
+			continue;
+
+		$nikaimport = Bitrix\NikaImport\NikaImportTable::getById($ID)->fetch();
+		if (empty($nikaimport))
+			continue;
+
+		switch ($_REQUEST['action'])
+		{
+			case 'delete':
+				if (!Bitrix\NikaImport\Helper::deleteTest($ID))
+					$lAdmin->addGroupError(getMessage('NIKAIMPORT_DELETE_ERROR'));
+				break;
+			case 'start':
+				if (!empty($arActiveTests[$nikaimport['SITE_ID']]))
+				{
+					if (in_array($ID, $arActiveTests[$nikaimport['SITE_ID']]))
+						$lAdmin->addGroupError(getMessage('NIKAIMPORT_START_ERROR'));
+					else
+						$lAdmin->addGroupError(getMessage('NIKAIMPORT_ONLYONE_WARNING'));
+				}
+				else if ($nikaimport['ENABLED'] != 'Y')
+				{
+					$lAdmin->addGroupError(getMessage('NIKAIMPORT_START_ERROR'));
+				}
+				else if (!Bitrix\NikaImport\Helper::startTest($ID))
+				{
+					$lAdmin->addGroupError(getMessage('NIKAIMPORT_START_ERROR'));
+				}
+				else
+				{
+					$arActiveTests[$nikaimport['SITE_ID']] = $nikaimport;
+				}
+				break;
+			case 'stop':
+				if (!Bitrix\NikaImport\Helper::stopTest($ID))
+					$lAdmin->addGroupError(getMessage('NIKAIMPORT_STOP_ERROR'));
+				break;
+		}
+	}
+}
+
+$arHeaders = array(
+	array('id' => 'TITLE', 'content' => getMessage('NIKAIMPORT_TBL_HEADER_TITLE'), 'default' => true, 'sort' => 'name'),
+	array('id' => 'ACTIVE', 'content' => getMessage('NIKAIMPORT_TBL_HEADER_STATE'), 'default' => true, 'sort' => 'active')
+);
+
+$lAdmin->addHeaders($arHeaders);
+
+
+$result = Bitrix\NikaImport\NikaImportTable::getList(
+	array(
+		'order'  => array(
+			strtoupper($by) => $order
+		),
+		'select' => array(
+			'*'
+		)
+	)
+);
+$result = new CAdminResult($result, $sTableID);
+
+$arRows = array();
+$arActiveTests = array();
+while ($nikaimport = $result->fetch())
+{
+	$arRows[] = $nikaimport;
+
+	if ($nikaimport['ACTIVE'] == 'Y')
+	{
+		if (!isset($arActiveTests[$nikaimport['SITE_ID']]))
+			$arActiveTests[$nikaimport['SITE_ID']] = array();
+
+		$arActiveTests[$nikaimport['SITE_ID']][] = $nikaimport['ID'];
+	}
+}
+
+foreach ($arRows as &$nikaimport)
+{
+	$row =& $lAdmin->addRow($nikaimport['ID'], $nikaimport);
+	$row->addViewField('TITLE', sprintf(
+		'<div%s><b>%s</b><br>%s</div>',
+		in_array($nikaimport['ENABLED'], array('T', 'Y')) ? '' : ' style="color: #808080; "',
+		htmlspecialcharsbx($nikaimport['NAME']) ?: str_replace('#ID#', $nikaimport['ID'], getMessage('NIKAIMPORT_TEST_TITLE')),
+		htmlspecialcharsbx($nikaimport['DESCR'])
+	));
+
+	if (in_array($nikaimport['ENABLED'], array('T', 'Y')))
+	{
+		if ($nikaimport['ACTIVE'] == 'Y')
+		{
+			$start_date = $nikaimport['START_DATE']->format(Bitrix\Main\Type\Date::convertFormatToPhp($arLang['FORMAT_DATE']));
+			$end_date   = null;
+
+			if ($nikaimport['DURATION'] != 0)
+			{
+				if ($nikaimport['DURATION'] > 0)
+				{
+					$end = clone $nikaimport['START_DATE'];
+					$end->add(intval($nikaimport['DURATION']).' days');
+
+					$end_date = $end->format(Bitrix\Main\Type\Date::convertFormatToPhp($arLang['FORMAT_DATE']));
+				}
+				else
+				{
+					$siteCapacity = Bitrix\NikaImport\AdminHelper::getSiteCapacity($nikaimport['SITE_ID']);
+					$testCapacity = Bitrix\NikaImport\AdminHelper::getTestCapacity($nikaimport['ID']);
+
+					if ($nikaimport['MIN_AMOUNT'] > 0 && $nikaimport['PORTION'] > 0 && $siteCapacity['daily'] > 0)
+					{
+						$rem = $nikaimport['MIN_AMOUNT'] - min($testCapacity);
+						$est = $rem > 0 ? $rem / ($siteCapacity['daily'] / 2) : 0;
+
+						$end = new Bitrix\Main\Type\DateTime();
+						$end->add(ceil(100 * $est / $nikaimport['PORTION']).' days');
+
+						$end_date = $end->format(Bitrix\Main\Type\Date::convertFormatToPhp($arLang['FORMAT_DATE']));
+					}
+					else
+					{
+						$end_date = getMessage('NIKAIMPORT_DURATION_NA');
+					}
+				}
+			}
+
+			$user_name = CUser::formatName(
+				CSite::getNameFormat(),
+				array(
+					'TITLE'       => $nikaimport['USER_TITLE'],
+					'NAME'        => $nikaimport['USER_NAME'],
+					'SECOND_NAME' => $nikaimport['USER_SECOND_NAME'],
+					'LAST_NAME'   => $nikaimport['USER_LAST_NAME'],
+					'LOGIN'       => $nikaimport['USER_LOGIN'],
+				),
+				true, true
+			);
+
+			$status  = '<table style="width: 100%; border-spacing: 0px; "><tr>';
+
+			$status .= '<td style="width: 1px; padding: 0px; vertical-align: top; "><img src="/bitrix/images/nikaimport/ab-test-on.gif"></td>';
+
+			$status .= '<td style="padding: 0px 10px; vertical-align: top; ">';
+			$status .= '<span style="white-space: nowrap; color: #729e00; font-weight: bold; ">'.getMessage('NIKAIMPORT_STATE_STARTED').'</span><br>';
+			$status .= '<span style="white-space: nowrap; ">'.getMessage('NIKAIMPORT_START_DATE').': '.$start_date.'</span><br>';
+			if ($end_date)
+				$status .= '<span style="white-space: nowrap; ">'.getMessage('NIKAIMPORT_STOP_DATE2').': '.$end_date.'</span><br>';
+			$status .= '<span style="white-space: nowrap; ">'.getMessage('NIKAIMPORT_STARTED_BY').': <a href="/bitrix/admin/user_edit.php?ID='.$nikaimport['USER_ID'].'&lang='.LANG.'">'.$user_name.'</a></span>';
+			$status .= '</td>';
+
+			if ($MOD_RIGHT >= 'W')
+				$status .= '<td style="width: 1px; padding: 0px; vertical-align: top; "><span class="adm-btn" onclick="if (confirm(\''.CUtil::JSEscape(getMessage('NIKAIMPORT_STOP_CONFIRM')).'\')) '.$lAdmin->actionDoGroup($nikaimport['ID'], 'stop').'">'.getMessage('NIKAIMPORT_BTN_STOP').'</span></td>';
+
+			$status .= '</tr></table>';
+		}
+		else
+		{
+			$stop_date = $nikaimport['STOP_DATE'] ? $nikaimport['STOP_DATE']->format(Bitrix\Main\Type\Date::convertFormatToPhp($arLang['FORMAT_DATE'])) : false;
+
+			$user_name = $nikaimport['USER_ID'] ? CUser::formatName(
+				CSite::getNameFormat(),
+				array(
+					'TITLE'       => $nikaimport['USER_TITLE'],
+					'NAME'        => $nikaimport['USER_NAME'],
+					'SECOND_NAME' => $nikaimport['USER_SECOND_NAME'],
+					'LAST_NAME'   => $nikaimport['USER_LAST_NAME'],
+					'LOGIN'       => $nikaimport['USER_LOGIN'],
+				),
+				true, true
+			) : false;
+
+			$status  = '<table style="width: 100%; border-spacing: 0px; "><tr>';
+
+			$status .= '<td style="width: 1px; padding: 0px; vertical-align: top; "><img src="/bitrix/images/nikaimport/ab-test-off.gif"></td>';
+
+			$status .= '<td style="padding: 0px 10px; vertical-align: top; ">';
+			$status .= '<span style="white-space: nowrap; font-weight: bold; ">'.getMessage('NIKAIMPORT_STATE_STOPPED').'</span><br>';
+			if ($stop_date)
+				$status .= '<span style="white-space: nowrap; ">'.getMessage('NIKAIMPORT_STOP_DATE').': '.$stop_date.'</span><br>';
+			if ($user_name)
+				$status .= '<span style="white-space: nowrap; ">'.getMessage('NIKAIMPORT_STOPPED_BY').': <a href="/bitrix/admin/user_edit.php?ID='.$nikaimport['USER_ID'].'&lang='.LANG.'">'.$user_name.'</a></span>';
+			$status .= '</td>';
+
+			if ($MOD_RIGHT >= 'W')
+			{
+				if ($nikaimport['ENABLED'] == 'T')
+					$action = $lAdmin->actionRedirect('nikaimport_edit.php?ID='.$nikaimport['ID'].'&lang='.LANG);
+				else if (empty($arActiveTests[$nikaimport['SITE_ID']]))
+					$action = 'if (confirm(\''.CUtil::JSEscape(getMessage('NIKAIMPORT_START_CONFIRM')).'\')) '.$lAdmin->actionDoGroup($nikaimport['ID'], 'start');
+				else
+					$action = 'alert(\''.CUtil::JSEscape(getMessage('NIKAIMPORT_ONLYONE_WARNING')).'\')';
+
+				if (empty($arActiveTests[$nikaimport['SITE_ID']]))
+					$status .= '<td style="width: 1px; padding: 0px; vertical-align: top; "><span class="adm-btn adm-btn-green" onclick="'.$action.'">'.getMessage('NIKAIMPORT_BTN_START').'</span></td>';
+				else
+					$status .= '<td style="width: 1px; padding: 0px; vertical-align: top; "><span class="adm-btn adm-btn-disabled" style="margin-right: 0px; " onclick="'.$action.'">'.getMessage('NIKAIMPORT_BTN_START').'</span></td>';
+			}
+
+			$status .= '</tr></table>';
+		}
+	}
+	else
+	{
+		$status  = '<table style="width: 100%; border-spacing: 0px; color: #808080; "><tr>';
+
+		$status .= '<td style="width: 1px; padding: 0px; vertical-align: top; "><img src="/bitrix/images/nikaimport/ab-test-off.gif"></td>';
+
+		$status .= '<td style="padding: 0px 10px; vertical-align: top; ">';
+		$status .= '<span style="white-space: nowrap; ">'.getMessage('NIKAIMPORT_NOT_READY').'</span>';
+		$status .= '</td>';
+
+		$status .= '</tr></table>';
+	}
+
+	$row->addViewField('ACTIVE', $status);
+
+	$arActions = array();
+
+	if (in_array($nikaimport['ENABLED'], array('T', 'Y')))
+	{
+		if (empty($arActiveTests[$nikaimport['SITE_ID']]) || in_array($nikaimport['ID'], $arActiveTests[$nikaimport['SITE_ID']]))
+		{
+			$arActions[] = array(
+				'ICON'   => '',
+				'TEXT'   => getMessage($nikaimport['ACTIVE'] == 'Y' ? 'NIKAIMPORT_BTN_STOP' : 'NIKAIMPORT_BTN_START'),
+				'ACTION' => $nikaimport['ENABLED'] == 'T'
+					? $lAdmin->actionRedirect('nikaimport_edit.php?ID='.$nikaimport['ID'].'&lang='.LANG)
+					: "if (confirm('".CUtil::JSEscape(getMessage($nikaimport['ACTIVE'] == 'Y' ? 'NIKAIMPORT_STOP_CONFIRM' : 'NIKAIMPORT_START_CONFIRM'))."')) ".$lAdmin->actionDoGroup($nikaimport['ID'], $nikaimport['ACTIVE'] == 'Y' ? 'stop' : 'start')
+			);
+		}
+
+		if ($nikaimport['USER_ID'])
+		{
+			$arActions[] = array(
+				'ICON'    => '',
+				'DEFAULT' => 'Y',
+				'TEXT'    => getMessage('NIKAIMPORT_BTN_REPORT'),
+				'ACTION'  => $lAdmin->actionRedirect('nikaimport_report.php?ID='.$nikaimport['ID'].'&lang='.LANG)
+			);
+		}
+
+		$arActions[] = array('SEPARATOR' => 'Y');
+		$arActions[] = array(
+			'ICON'    => 'edit',
+			'DEFAULT' => $nikaimport['USER_ID'] ? 'N' : 'Y',
+			'TEXT'    => getMessage('NIKAIMPORT_BTN_EDIT'),
+			'ACTION'  => $lAdmin->actionRedirect('nikaimport_edit.php?ID='.$nikaimport['ID'].'&lang='.LANG)
+		);
+	}
+
+	$arActions[] = array(
+		'ICON'   => 'delete',
+		'TEXT'   => getMessage('NIKAIMPORT_BTN_DELETE'),
+		'ACTION' => "if (confirm('".CUtil::JSEscape(getMessage('NIKAIMPORT_DELETE_CONFIRM'))."')) ".$lAdmin->actionDoGroup($nikaimport['ID'], 'delete'),
+	);
+
+	if ($MOD_RIGHT >= 'W')
+		$row->addActions($arActions);
+}
+
+$lAdmin->checkListMode();
+
+$APPLICATION->setTitle(getMessage('NIKAIMPORT_LIST_TITLE'));
+require($_SERVER["DOCUMENT_ROOT"]."/bitrix/modules/main/include/prolog_admin_after.php");
+
+?>
+
+<div style="background-color: #fff; border: 1px solid #ced7d8; padding: 20px; ">
+	<table style="border-spacing: 0px; "><tr>
+		<td style="border: none; padding: 15px; "><img src="/bitrix/images/nikaimport/ab-icon-big.png"></td>
+		<td style="border: none; padding: 15px; max-width: 800px; "><?=getMessage('NIKAIMPORT_LIST_DESCR'); ?></td>
+	</tr></table>
+</div><br>
+
+<?
+
+$lAdmin->displayList();
+
+require($_SERVER["DOCUMENT_ROOT"]."/bitrix/modules/main/include/epilog_admin.php");
