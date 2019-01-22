@@ -2752,7 +2752,7 @@ class CIBlockCMLImportCustom extends \CIBlockCMLImport {
             $counter["UPD"]++;
             $arElement["ID"] = $arDBElement["ID"];
         } elseif (isset($arXMLElement[$this->mess["IBLOCK_XML2_NAME"]])) { // Наименование
-            $arElement["ACTIVE"] = $arXMLElement[$this->mess["IBLOCK_XML2_ACTIVE"]];
+            $arElement["ACTIVE"] = "Y";
             if ($arDBElement) {
                 if ($arDBElement["PREVIEW_PICTURE"] > 0) {
                     $this->arElementFilesId["PREVIEW_PICTURE"] = array($arDBElement["PREVIEW_PICTURE"]);
